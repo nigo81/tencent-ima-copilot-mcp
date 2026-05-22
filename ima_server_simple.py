@@ -5,6 +5,7 @@ IMA Copilot MCP 服务器 - 基于环境变量的简化版本
 """
 
 import sys
+import json
 import asyncio
 from pathlib import Path
 from datetime import datetime
@@ -55,6 +56,7 @@ mcp = FastMCP("IMA Copilot")
 ima_client: IMAAPIClient = None
 _token_refreshed: bool = False  # 标记 token 是否已刷新
 _client_init_lock = asyncio.Lock()
+_cached_kb_list: list[dict] = []  # 缓存登录时获取的知识库列表
 
 
 def _validate_startup_config() -> tuple[bool, str]:
@@ -328,10 +330,130 @@ async def login() -> list[TextContent]:
         kb_info = f"\n知识库: {config.knowledge_base_id}"
 
     logger.info("✅ 登录成功，认证信息已更新")
-    return [TextContent(
-        type="text",
-        text=f"✅ 登录成功！认证信息已自动保存。{kb_info}\n现在可以使用 ask 工具提问了。",
-    )]
+
+    # 构建返回消息
+    msg_parts = ["✅ 登录成功！认证信息已自动保存。"]
+
+    # 解析知识库列表
+    kb_list_raw = result.get("knowledge_bases", "")
+    kb_list = []
+    if kb_list_raw:
+        try:
+            kb_list = json.loads(kb_list_raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("⚠️ 知识库列表解析失败")
+
+    if kb_list:
+        # 缓存知识库列表供 set_knowledge_base 工具使用
+        global _cached_kb_list
+        _cached_kb_list = kb_list
+
+        msg_parts.append("\n\n📚 发现以下知识库：")
+        for i, kb in enumerate(kb_list, 1):
+            msg_parts.append(f"  {i}. {kb['name']} (ID: {kb['id']}) [{kb.get('category', '')}]")
+
+        config = get_config()
+        current_kb_id = config.knowledge_base_id if config else ""
+        if current_kb_id:
+            # 找到当前配置的知识库名称
+            current_name = ""
+            for kb in kb_list:
+                if kb["id"] == current_kb_id:
+                    current_name = kb["name"]
+                    break
+            msg_parts.append(f"\n当前默认知识库: {current_name or current_kb_id}")
+
+        msg_parts.append(
+            "\n如需切换知识库，请告诉我要使用哪个（编号或名称），"
+            "例如：\"设置知识库为信永中和\" 或 \"使用第3个\""
+        )
+
+        # 自动检测：如果当前没有配置知识库，且有且仅有一个，自动设置
+        if not current_kb_id and len(kb_list) == 1:
+            auto_id = kb_list[0]["id"]
+            auto_name = kb_list[0]["name"]
+            config_manager.update_knowledge_base(knowledge_base_id=auto_id)
+            msg_parts.append(f"\n已自动设置知识库为: {auto_name} ({auto_id})")
+    else:
+        config = get_config()
+        kb_info = ""
+        if config:
+            kb_info = f"\n知识库: {config.knowledge_base_id}"
+        if kb_info:
+            msg_parts.append(kb_info)
+        msg_parts.append("\n未获取到知识库列表，请手动在 .env 中配置 IMA_KNOWLEDGE_BASE_ID")
+
+    return [TextContent(type="text", text="".join(msg_parts))]
+
+
+@mcp.tool()
+async def set_knowledge_base(selection: str) -> list[TextContent]:
+    """设置默认知识库。登录后使用，通过编号、名称关键词或完整 ID 选择知识库。
+
+    Args:
+        selection: 知识库编号（如 "1"）、名称关键词（如 "信永中和"）或完整知识库 ID
+
+    Returns:
+        设置结果
+    """
+    global ima_client
+
+    if not _cached_kb_list:
+        return [TextContent(type="text", text="[ERROR] 未找到知识库列表，请先调用 login 登录")]
+
+    selection = selection.strip()
+    target_kb = None
+
+    # 1. 尝试按编号匹配
+    if selection.isdigit():
+        idx = int(selection) - 1
+        if 0 <= idx < len(_cached_kb_list):
+            target_kb = _cached_kb_list[idx]
+
+    # 2. 尝试按完整 ID 匹配
+    if not target_kb:
+        for kb in _cached_kb_list:
+            if kb["id"] == selection:
+                target_kb = kb
+                break
+
+    # 3. 尝试按名称关键词匹配
+    if not target_kb:
+        matches = [kb for kb in _cached_kb_list if selection in kb["name"]]
+        if len(matches) == 1:
+            target_kb = matches[0]
+        elif len(matches) > 1:
+            names = "\n".join(f"  {i+1}. {kb['name']} (ID: {kb['id']})" for i, kb in enumerate(matches))
+            return [TextContent(
+                type="text",
+                text=f"找到多个匹配的知识库，请更精确地指定：\n{names}",
+            )]
+
+    if not target_kb:
+        available = "\n".join(f"  {i+1}. {kb['name']} (ID: {kb['id']})" for i, kb in enumerate(_cached_kb_list))
+        return [TextContent(
+            type="text",
+            text=f"未找到匹配的知识库 \"{selection}\"。\n可用的知识库：\n{available}",
+        )]
+
+    # 更新配置
+    ok = config_manager.update_knowledge_base(knowledge_base_id=target_kb["id"])
+
+    # 重置客户端，下次 ask 时会用新配置重建
+    if ima_client:
+        try:
+            await ima_client.close()
+        except Exception:
+            pass
+        ima_client = None
+
+    if ok:
+        return [TextContent(
+            type="text",
+            text=f"✅ 默认知识库已设置为: {target_kb['name']} (ID: {target_kb['id']})\n现在可以使用 ask 工具提问了。",
+        )]
+    else:
+        return [TextContent(type="text", text="[ERROR] 知识库配置保存失败，请查看日志")]
 
 
 @mcp.tool()

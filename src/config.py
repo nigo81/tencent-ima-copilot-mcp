@@ -163,6 +163,40 @@ class ConfigManager:
             logger.error(f"更新认证配置失败: {e}")
             return False
 
+    def update_knowledge_base(
+        self,
+        knowledge_base_id: Optional[str] = None,
+        knowledge_base_ids: Optional[list[str]] = None,
+    ) -> bool:
+        """更新知识库配置并持久化到 .env
+
+        Args:
+            knowledge_base_id: 默认知识库 ID（单知识库模式）
+            knowledge_base_ids: 多知识库 ID 列表
+
+        Returns:
+            更新是否成功
+        """
+        try:
+            # 更新环境配置
+            if knowledge_base_id:
+                self.env_config.knowledge_base_id = knowledge_base_id
+            if knowledge_base_ids is not None:
+                self.env_config.knowledge_base_ids = ",".join(knowledge_base_ids)
+
+            # 重置 IMAConfig 以便下次 get_config 重新加载
+            self._ima_config = None
+
+            # 写入 .env 文件
+            self._write_env_kb(knowledge_base_id, knowledge_base_ids)
+
+            logger.info("✅ 知识库配置已更新并持久化")
+            return True
+
+        except Exception as e:
+            logger.error(f"更新知识库配置失败: {e}")
+            return False
+
     def _write_env_file(
         self,
         x_ima_cookie: str,
@@ -207,6 +241,58 @@ class ConfigManager:
 
         env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         logger.info(f"✅ .env 已更新: {env_path}")
+
+    def _write_env_kb(
+        self,
+        knowledge_base_id: Optional[str] = None,
+        knowledge_base_ids: Optional[list[str]] = None,
+    ) -> None:
+        """将知识库配置写入 .env 文件"""
+        from pathlib import Path
+
+        env_path = Path(__file__).parent.parent / ".env"
+        lines: list[str] = []
+
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+
+        updates: Dict[str, str] = {}
+        if knowledge_base_id:
+            updates["IMA_KNOWLEDGE_BASE_ID"] = knowledge_base_id
+        if knowledge_base_ids is not None:
+            updates["IMA_KNOWLEDGE_BASE_IDS"] = ",".join(knowledge_base_ids)
+
+        if not updates:
+            return
+
+        updated_keys: set[str] = set()
+        new_lines: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            matched = False
+            for key, value in updates.items():
+                if stripped.startswith(f"{key}=") or stripped.startswith(f"{key} ="):
+                    new_lines.append(f'{key}="{value}"')
+                    updated_keys.add(key)
+                    matched = True
+                    break
+                # 也处理被注释的行
+                if stripped.startswith(f"# {key}=") or stripped.startswith(f"#{key}="):
+                    new_lines.append(f'{key}="{value}"')
+                    updated_keys.add(key)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+
+        # 追加尚未存在的 key
+        for key, value in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f'{key}="{value}"')
+
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        logger.info(f"✅ .env 知识库配置已更新: {env_path}")
 
     def _generate_missing_params(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
         """自动生成缺失的参数"""

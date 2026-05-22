@@ -246,6 +246,49 @@ async def login_and_capture(timeout: int = 300) -> Dict[str, str]:
         if cookie_str:
             captured["cookies"] = cookie_str
 
+        # 登录成功后，导航到知识库页面获取知识库列表
+        logger.info("📚 正在获取知识库列表...")
+
+        kb_list = []
+        kb_done = asyncio.Event()
+
+        async def on_response(response):
+            if "get_home_page_data" not in response.url:
+                return
+            try:
+                data = await response.json()
+                if data.get("code") == 0:
+                    sections = data.get("data", {}).get("section_list", [])
+                    for section in sections:
+                        category = section.get("name", "")
+                        for kb in section.get("kb_list", []):
+                            kb_id = kb.get("id", "")
+                            kb_name = kb.get("name", "")
+                            if kb_id and kb_name:
+                                kb_list.append({
+                                    "id": kb_id,
+                                    "name": kb_name,
+                                    "category": category,
+                                })
+                    kb_done.set()
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+        await page.goto("https://ima.qq.com/wikis", wait_until="domcontentloaded")
+
+        try:
+            await asyncio.wait_for(kb_done.wait(), timeout=15)
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ 获取知识库列表超时，跳过")
+
+        if kb_list:
+            import json
+            captured["knowledge_bases"] = json.dumps(kb_list, ensure_ascii=False)
+            logger.info(f"📚 获取到 {len(kb_list)} 个知识库")
+
+        page.remove_listener("response", on_response)
+
         logger.info("🔒 登录成功，关闭浏览器")
         await browser.close()
 
