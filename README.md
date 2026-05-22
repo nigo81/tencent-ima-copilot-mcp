@@ -70,8 +70,16 @@ python -c "import sys; sys.path.insert(0,'src'); from ima_server_simple import m
 2. 打开 IMA 登录页面（https://ima.qq.com）
 3. 等待你在浏览器中完成登录
 4. 自动捕获并保存认证 Cookie
+5. **自动获取并展示你的知识库列表**
 
-登录成功后，你就可以使用 `ask` 或 `ask_with_kb` 工具提问了！
+登录成功后会列出所有可用的知识库（个人/共享/订阅），你可以直接告诉 AI 切换，例如：
+> "切换到上交所IPO知识库" 或 "使用第3个"
+
+系统会自动将选择的知识库写入配置，无需手动编辑 `.env` 文件。
+
+### 4. 提问
+
+登录并选择知识库后，直接向 AI 提问即可。
 
 ## 🛠️ 可用的 MCP 工具
 
@@ -126,6 +134,20 @@ python -c "import sys; sys.path.insert(0,'src'); from ima_server_simple import m
 knowledge_base_id: "7305806844290061"
 ```
 
+### 4. `set_knowledge_base` - 切换默认知识库
+
+登录后使用，通过编号、名称关键词或完整 ID 选择知识库。
+
+**参数：**
+- `selection` (必需): 知识库编号（如 "1"）、名称关键词（如 "信永中和"）或完整知识库 ID
+
+**示例：**
+```
+"设置知识库为信永中和" 或 "使用第3个"
+```
+
+> 注意：需要先调用 `login` 获取知识库列表后才能使用此工具。
+
 ## 📚 可用的 MCP 资源
 
 ### 1. `ima://config`
@@ -163,6 +185,9 @@ knowledge_base_id: "7305806844290061"
 
 ### 如何获取知识库 ID
 
+**推荐方式**：直接调用 `login` 工具，登录后会自动列出所有知识库及其 ID，无需手动获取。
+
+**手动方式**：
 1. 在 IMA 网页选择目标知识库
 2. 按 F12 打开开发者工具，切换到 Network 标签
 3. 找到 `init_session` 请求

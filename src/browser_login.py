@@ -256,9 +256,31 @@ async def login_and_capture(timeout: int = 300) -> Dict[str, str]:
             if "get_home_page_data" not in response.url:
                 return
             try:
-                data = await response.json()
-                if data.get("code") == 0:
-                    sections = data.get("data", {}).get("section_list", [])
+                resp_json = await response.json()
+                if resp_json.get("code") != 0:
+                    return
+
+                # 新版 API: results 是 section 数组，每个 section 含 knowledge_base_list
+                results = resp_json.get("results", [])
+                if results:
+                    for section in results:
+                        category = section.get("knowledge_base_list_name", "")
+                        for kb in section.get("knowledge_base_list", []):
+                            kb_id = kb.get("id", "")
+                            basic = kb.get("basic_info", {})
+                            kb_name = basic.get("name", "") or kb.get("name", "")
+                            if kb_id and kb_name:
+                                kb_list.append({
+                                    "id": kb_id,
+                                    "name": kb_name,
+                                    "category": category,
+                                })
+                    kb_done.set()
+                    return
+
+                # 旧版兼容: data.section_list
+                sections = resp_json.get("data", {}).get("section_list", [])
+                if sections:
                     for section in sections:
                         category = section.get("name", "")
                         for kb in section.get("kb_list", []):
