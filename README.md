@@ -1,189 +1,132 @@
-# IMA Copilot MCP 服务器
+# 腾讯 IMA Copilot MCP 服务器
 
-基于 FastMCP v2 框架的腾讯 IMA Copilot MCP (Model Context Protocol) 服务器，**使用环境变量配置**，简化项目结构，专注于 MCP 协议实现。
+基于 FastMCP v2 的腾讯 IMA Copilot MCP (Model Context Protocol) 服务器，**使用环境变量配置**，将腾讯 IMA Copilot 的 Web 版本功能封装为 MCP 服务，提供通用知识库问答功能。
 
 ## ✨ 主要特性
 
-- 🚀 **极简配置**: 仅需两个必需参数即可启动，开箱即用
-- 🤖 **MCP 协议支持**: 完整实现 Model Context Protocol 规范 (基于 FastMCP 2.14.1)
-- 🔧 **环境变量配置**: 通过 `.env` 文件管理所有配置
-- 📡 **HTTP 传输**: 支持 HTTP 传输协议，便于 MCP Inspector 连接
-- 🛠️ **增强型 MCP 工具**: 提供腾讯 IMA 知识库问答功能，返回结果包含回答文本和结构化参考资料
-- 🔄 **Token 自动刷新**: 智能管理认证 token，自动刷新保持会话有效
-- 💪 **Tenacity-powered Retries**: 集成 tenacity 库，优化重试机制，支持指数退避和针对性错误重试
-- 🧯 **Code=3 自愈**: 对高并发瞬时 `Code=3` 错误执行退避重试并自动恢复
-- 🚦 **并发限流**: 默认串行问答（并发=1），降低请求突发导致的系统错误
-- 📝 **Loguru-enhanced Logging**: 采用 Loguru 提升日志体验，提供更清晰、结构化的日志输出
-- ⏱️ **超时保护**: 内置请求超时机制，防止长时间阻塞 (已提升至 300 秒)
-- 🎯 **一键启动**: 简化的启动流程，自动环境检查和配置验证
-- 🐳 **Docker 支持**: 提供官方 Docker 镜像，开箱即用
+- 🔐 **浏览器自动登录** - 无需手动提取 Cookie，调用 `login` 工具即可自动登录
+- 🌐 **自动浏览器检测** - 智能识别 Chrome/Edge/QQ 浏览器/360/Firefox 等常用浏览器
+- 🍪 **Cookie 自动捕获** - 登录后自动保存认证凭据，持久化存储
+- 🔄 **Token 自动刷新** - 智能管理认证 token，自动刷新保持会话有效
+- 📡 **SSE 流式响应** - 支持实时流式输出，长回复也能稳定获取
+- 📚 **多知识库支持** - 支持配置多个知识库，灵活切换
+- 💪 **Tenacity-powered Retries** - 集成 tenacity 库，优化重试机制，支持指数退避
+- 🚦 **并发限流** - 默认串行问答（并发=1），降低请求突发导致的系统错误
+- 📝 **Loguru-enhanced Logging** - 采用 Loguru 提升日志体验，提供更清晰、结构化的日志输出
+- ⏱️ **超时保护** - 内置请求超时机制（300 秒），防止长时间阻塞
+- 🐳 **Docker 支持** - 提供官方 Docker 镜像，开箱即用
 
-## 🚀 最新进展 (2025-12-21)
+## 🚀 快速开始
 
-- ✅ **服务器成功运行**: 已验证基于 FastMCP 2.14.1 的 HTTP 传输模式正常工作。
-- ✅ **修复启动报错**: 解决了 `AttributeError: 'FastMCP' object has no attribute 'on_shutdown'` 问题（通过在当前版本中禁用该钩子）。
-- ✅ **全流程验证**: 验证了从 Token 刷新、会话初始化到 SSE 流式响应解析的完整链路，支持长回复（35秒+响应已验证）。
-
-## 快速开始
-
-### 方式一：使用 Docker（推荐）
-
-#### 1. 使用 Docker Run
+### 1. 安装
 
 ```bash
-# 拉取镜像
-docker pull highkay/tencent-ima-copilot-mcp:latest
+# 克隆仓库
+git clone https://github.com/highkay/tencent-ima-copilot-mcp.git
+cd tencent-ima-copilot-mcp
 
-# 运行容器（需要替换以下两个必需的环境变量）
-docker run -d \
-  --name ima-copilot-mcp \
-  -p 8081:8081 \
-  -e IMA_X_IMA_COOKIE="your_x_ima_cookie_here" \
-  -e IMA_X_IMA_BKN="your_x_ima_bkn_here" \
-  -v $(pwd)/logs:/app/logs \
-  --restart unless-stopped \
-  highkay/tencent-ima-copilot-mcp:latest
-
-# 查看日志
-docker logs -f ima-copilot-mcp
+# 安装依赖（推荐使用阿里云镜像加速）
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 ```
 
-#### 2. 使用 Docker Compose（更便捷）
+> **注意**: `playwright` 已包含在 requirements.txt 中，无需单独安装。
+> login 工具会自动检测你系统上已安装的浏览器（Chrome/Edge/QQ浏览器/360/Firefox），
+> **无需下载 Chromium**。只有在以上浏览器都未安装时，才需要运行 `playwright install chromium`。
 
-创建 `.env` 文件（或直接在 shell 中设置环境变量）：
+### 2. 配置 MCP 客户端
+
+#### Claude Desktop
+
+编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "ima-copilot": {
+      "command": "python",
+      "args": ["-c", "import sys; sys.path.insert(0,'src'); from ima_server_simple import mcp; mcp.run(transport='stdio')"],
+      "cwd": "/path/to/tencent-ima-copilot-mcp"
+    }
+  }
+}
+```
+
+#### 其他 MCP 客户端
+
+根据你的 MCP 客户端配置方式，使用以下命令启动服务器：
 
 ```bash
-# .env 文件
-IMA_X_IMA_COOKIE="your_x_ima_cookie_here"
-IMA_X_IMA_BKN="your_x_ima_bkn_here"
+python -c "import sys; sys.path.insert(0,'src'); from ima_server_simple import mcp; mcp.run(transport='stdio')"
 ```
 
-启动服务：
+### 3. 登录
 
-```bash
-# 启动服务
-docker-compose up -d
+启动 MCP 客户端后，直接告诉你的 AI 助手：
 
-# 查看日志
-docker-compose logs -f
+> "登录 IMA" 或 "login to IMA"
+
+`login` 工具会自动：
+1. 检测你系统上已安装的浏览器（Chrome/Edge/QQ 浏览器/360/Firefox 等）
+2. 打开 IMA 登录页面（https://ima.qq.com）
+3. 等待你在浏览器中完成登录
+4. 自动捕获并保存认证 Cookie
+
+登录成功后，你就可以使用 `ask` 或 `ask_with_kb` 工具提问了！
+
+## 🛠️ 可用的 MCP 工具
+
+### 1. `login` - 浏览器自动登录
+
+打开浏览器登录腾讯 IMA，自动获取并保存认证凭据。
+
+**适用场景：**
+- 首次使用，尚未配置认证信息
+- Cookie/Token 已过期，`ask` 工具返回认证错误
+- 需要切换账号
+
+**调用方式：**
+```
+"登录 IMA" 或 "login to IMA"
 ```
 
-### 方式二：本地安装
+### 2. `ask` - 提问（单知识库模式）
 
-#### 1. 安装依赖
+向腾讯 IMA 知识库询问任何问题。
 
-```bash
-# 安装 FastMCP、tenacity、Loguru 和所有依赖
-pip install -r requirements.txt
-```
-
-#### 2. 配置环境变量
-
-```bash
-# 复制配置文件模板
-cp .env.example .env
-
-# 编辑 .env 文件，填入从浏览器获取的 IMA 认证信息
-nano .env  # 或使用其他编辑器
-```
-
-#### 必需配置项
-
-以下环境变量必须正确配置才能使用服务：
-
-- **`IMA_X_IMA_COOKIE`**: X-Ima-Cookie 请求头值（包含平台信息、token 等）
-- **`IMA_X_IMA_BKN`**: X-Ima-Bkn 请求头值（业务密钥）
-
-#### 3. 获取 IMA 认证信息
-
-#### 步骤 1: 访问 IMA Copilot
-
-1. 访问 [https://ima.qq.com](https://ima.qq.com) 并登录
-2. 按 F12 打开开发者工具
-3. 切换到 **Network** (网络) 标签页
-
-#### 步骤 2: 获取认证头信息
-
-1. 在 IMA 中发送一条消息
-2. 找到向 `/cgi-bin/assistant/qa` 的 POST 请求
-3. 查看 **Request Headers**，复制以下字段：
-   - `x-ima-cookie` → `IMA_X_IMA_COOKIE`
-   - `x-ima-bkn` → `IMA_X_IMA_BKN`
-
-#### 4. 启动服务器
-
-##### 方式一：使用启动脚本（推荐）
-
-```bash
-# Windows
-start.bat
-
-# 或使用 Python 脚本（跨平台）
-python run.py
-```
-
-##### 方式二：使用 fastmcp 命令
-
-```bash
-fastmcp run ima_server_simple.py:mcp --transport http --host 127.0.0.1 --port 8081
-```
-
-#### 5. 使用 MCP Inspector
-
-```bash
-# 安装 MCP Inspector
-npx @modelcontextprotocol/inspector
-
-# 连接到服务器
-# 在 Inspector 中输入: http://127.0.0.1:8081/mcp
-```
-
-### 服务端点
-
-- **MCP 协议端点**: `http://127.0.0.1:8081/mcp`（用于 MCP Inspector 或其他 MCP 客户端）
-- **日志文件**: `logs/debug/ima_server_YYYYMMDD_HHMMSS.log`（Loguru 自动生成和管理）
-- **原始 SSE 日志**: `logs/debug/raw/sse_*.log`（发生错误时自动保存）
-
-## 可用的 MCP 工具
-
-### 1. `ask`
-
-向腾讯 IMA 知识库询问任何问题
-
-**参数:**
+**参数：**
 - `question` (必需): 要询问的问题
 
-**示例:**
+**示例：**
 ```
-问题: "什么是机器学习？"
-问题: "如何制作番茄炒蛋？"
+"什么是机器学习？"
+"如何制作番茄炒蛋？"
 ```
 
-**特性:**
+**特性：**
 - 自动管理会话，无需手动创建
 - 智能 token 刷新，确保认证有效
 - 内置并发限流（默认 `IMA_ASK_CONCURRENCY_LIMIT=1`）
 - 检测到 `Code=3` 且无文本时自动指数退避重试（最多 2 次）
-- **300 秒超时保护**，防止长时间等待
-- 返回内容为 **`TextContent` 列表**，包含**回答文本**和格式化后的**参考资料**
+- 300 秒超时保护，防止长时间等待
+- 返回内容为 `TextContent` 列表，包含**回答文本**和格式化后的**参考资料**
 
 > 注意：当配置了多个知识库 ID 时，`ask` 会直接报错并提示改用 `ask_with_kb`。
 
-### 2. `ask_with_kb`
+### 3. `ask_with_kb` - 指定知识库提问（多知识库模式）
 
-向指定知识库询问问题（多知识库模式）
+向指定知识库询问问题。
 
-**参数:**
+**参数：**
 - `question` (必需): 要询问的问题
 - `knowledge_base_id` (必需): 目标知识库 ID（必须在配置列表中）
 
-**示例:**
+**示例：**
 ```
 问题: "总结这个知识库的核心内容"
 knowledge_base_id: "7305806844290061"
 ```
 
-## 可用的 MCP 资源
+## 📚 可用的 MCP 资源
 
 ### 1. `ima://config`
 
@@ -191,26 +134,26 @@ knowledge_base_id: "7305806844290061"
 
 ### 2. `ima://help`
 
-获取帮助信息
+获取使用帮助信息
 
-## 配置选项
+## ⚙️ 环境变量配置
 
 ### 必需的环境变量
 
 | 变量名 | 说明 | 获取方式 |
 |--------|------|---------|
-| `IMA_X_IMA_COOKIE` | X-Ima-Cookie 请求头 | 从浏览器开发者工具 Network 标签中复制 |
-| `IMA_X_IMA_BKN` | X-Ima-Bkn 请求头 | 从浏览器开发者工具 Network 标签中复制 |
+| `IMA_X_IMA_COOKIE` | X-Ima-Cookie 请求头 | 由 `login` 工具自动填充 |
+| `IMA_X_IMA_BKN` | X-Ima-Bkn 请求头 | 由 `login` 工具自动填充 |
+| `IMA_KNOWLEDGE_BASE_ID` | 知识库 ID（单知识库模式） | 手动配置（见下方说明） |
 
 ### 可选的环境变量
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `IMA_KNOWLEDGE_BASE_ID` / `knowledgeBaseId` | 单知识库 ID（两者等价） | 无（必须显式配置） |
-| `IMA_KNOWLEDGE_BASE_IDS` / `knowledgeBaseIds` | 多知识库 ID 列表（逗号分隔） | 无 |
+| `IMA_KNOWLEDGE_BASE_IDS` | 多知识库 ID 列表（逗号分隔） | 无 |
 | `IMA_MCP_HOST` | MCP 服务器地址 | `127.0.0.1` |
 | `IMA_MCP_PORT` | MCP 服务器端口 | `8081` |
-| `IMA_MCP_LOG_LEVEL` | 日志级别 (支持 `DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
+| `IMA_MCP_LOG_LEVEL` | 日志级别 (DEBUG/INFO/WARNING/ERROR) | `INFO` |
 | `IMA_REQUEST_TIMEOUT` | IMA API 请求超时时间（秒） | `30` |
 | `IMA_RETRY_COUNT` | 网络/超时类异常重试次数 | `3` |
 | `IMA_ASK_CONCURRENCY_LIMIT` | 问答并发上限（建议 1-2） | `1` |
@@ -218,33 +161,100 @@ knowledge_base_id: "7305806844290061"
 | `IMA_SCENE_TYPE` | 场景类型 | `1` |
 | `IMA_MODEL_TYPE` | 模型类型 | `4` |
 
+### 如何获取知识库 ID
+
+1. 在 IMA 网页选择目标知识库
+2. 按 F12 打开开发者工具，切换到 Network 标签
+3. 找到 `init_session` 请求
+4. 查看 Payload 中的 `knowledge_base_id` 字段
+
 ### 知识库配置模式
 
-- 单知识库模式（兼容旧逻辑）：配置 `IMA_KNOWLEDGE_BASE_ID`（或 `knowledgeBaseId`），使用 `ask` 或 `ask_with_kb` 均可。
-- 多知识库模式：配置 `IMA_KNOWLEDGE_BASE_IDS`（或 `knowledgeBaseIds`，逗号分隔），必须使用 `ask_with_kb`。
-- 同时配置两者时：优先使用 `IMA_KNOWLEDGE_BASE_ID`（单知识库模式）。
-- 启动强校验：若 `IMA_KNOWLEDGE_BASE_ID` 与 `IMA_KNOWLEDGE_BASE_IDS` 都未配置，服务将直接退出。
+- **单知识库模式**：配置 `IMA_KNOWLEDGE_BASE_ID`，使用 `ask` 或 `ask_with_kb` 均可
+- **多知识库模式**：配置 `IMA_KNOWLEDGE_BASE_IDS`（逗号分隔），必须使用 `ask_with_kb`
+- 同时配置两者时：优先使用 `IMA_KNOWLEDGE_BASE_ID`（单知识库模式）
 
-### 从旧版本迁移
+## 🐳 Docker 使用
 
-- 只用一个知识库：保持原有 `IMA_KNOWLEDGE_BASE_ID=<id>` 即可，无需改调用方式。
-- 需要多个知识库：新增 `IMA_KNOWLEDGE_BASE_IDS=id1,id2,...`，并把调用从 `ask(question)` 改为 `ask_with_kb(question, knowledge_base_id)`。
+### 使用 Docker Compose（推荐）
 
-## 故障排除
+创建 `.env` 文件：
+
+```bash
+IMA_KNOWLEDGE_BASE_ID="your_knowledge_base_id"
+```
+
+启动服务：
+
+```bash
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+```
+
+### 使用 Docker Run
+
+```bash
+# 拉取镜像
+docker pull highkay/tencent-ima-copilot-mcp:latest
+
+# 运行容器
+docker run -d \
+  --name ima-copilot-mcp \
+  -p 8081:8081 \
+  -e IMA_KNOWLEDGE_BASE_ID="your_knowledge_base_id" \
+  -v $(pwd)/logs:/app/logs \
+  --restart unless-stopped \
+  highkay/tencent-ima-copilot-mcp:latest
+```
+
+> 注意：Docker 模式下使用 MCP Inspector 连接后，也需要调用 `login` 工具进行首次登录。
+
+## 🛠️ 开发
+
+### 本地开发
+
+```bash
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动服务器（HTTP 模式）
+fastmcp run ima_server_simple.py:mcp --transport http --host 127.0.0.1 --port 8081
+
+# 或使用 MCP Inspector 连接
+npx @modelcontextprotocol/inspector
+# 输入地址: http://127.0.0.1:8081/mcp
+```
+
+### 代码风格
+
+```bash
+# 使用 Ruff 检查和修复代码
+pip install ruff
+ruff check --fix .
+```
+
+## 🔍 故障排除
 
 ### 常见问题
 
-**Q: 认证失败（Token 验证失败）怎么办？**
+**Q: 调用 `ask` 时返回认证错误怎么办？**
 
 A:
-1. 检查 `.env` 文件中的 `IMA_X_IMA_COOKIE` 和 `IMA_X_IMA_BKN` 是否正确
-2. 确认 `IMA_X_IMA_COOKIE` 中包含 `IMA-REFRESH-TOKEN` 字段
-3. 重新从浏览器获取最新的认证信息
+1. 直接调用 `login` 工具重新登录
+2. `login` 会自动打开浏览器，等待你登录后自动捕获新的认证信息
+
+**Q: `login` 工具提示 "未检测到可用的浏览器" 怎么办？**
+
+A:
+1. 确保系统已安装 Chrome/Edge/QQ 浏览器/360/Firefox 等浏览器之一
+2. 如果已安装但仍报错，请手动配置浏览器路径到环境变量或代码中
 
 **Q: 如何连接特定的知识库？**
 
 A:
-在 `.env` 文件中设置 `IMA_KNOWLEDGE_BASE_ID`（或 `knowledgeBaseId`）即可。获取方法：
+在 `.env` 文件中设置 `IMA_KNOWLEDGE_BASE_ID` 即可。获取方法：
 1. 在 IMA 网页选择知识库
 2. 找到 `init_session` 请求
 3. 查看 Payload 中的 `knowledge_base_id`
@@ -263,6 +273,6 @@ A:
 2. 避免同一知识库短时间突发并发请求
 3. 服务已内置 `Code=3` 退避重试；若仍频繁出现，可适当增加请求间隔
 
-## 许可证
+## 📄 许可证
 
 MIT License

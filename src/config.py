@@ -112,6 +112,102 @@ class ConfigManager:
         self.env_config = IMAEnvironmentConfig()
         self._ima_config: Optional[IMAConfig] = None
 
+    def update_auth(
+        self,
+        x_ima_cookie: str,
+        x_ima_bkn: str,
+        cookies: str = "",
+    ) -> bool:
+        """运行时更新认证信息并持久化到 .env
+
+        Args:
+            x_ima_cookie: 捕获的 x-ima-cookie 值
+            x_ima_bkn: 捕获的 x-ima-bkn 值
+            cookies: 浏览器 cookies 字符串（可选）
+
+        Returns:
+            更新是否成功
+        """
+        try:
+            # 1. 更新环境配置
+            self.env_config.x_ima_cookie = x_ima_cookie
+            self.env_config.x_ima_bkn = x_ima_bkn
+            if cookies:
+                self.env_config.cookies = cookies
+
+            # 2. 重新加载 IMAConfig
+            self._ima_config = None
+            config = self.get_config()
+            if not config:
+                logger.error("update_auth: 重新加载配置失败")
+                return False
+
+            # 3. 强制覆盖核心字段（确保新值生效）
+            config.x_ima_cookie = x_ima_cookie
+            config.x_ima_bkn = x_ima_bkn
+            if cookies:
+                config.cookies = cookies
+            # 重置 token 状态，让后续请求自动刷新
+            config.current_token = None
+            config.token_updated_at = None
+            config.token_valid_time = None
+            config.updated_at = datetime.now()
+
+            # 4. 写入 .env 文件持久化
+            self._write_env_file(x_ima_cookie, x_ima_bkn, cookies)
+
+            logger.info("✅ 认证信息已更新并持久化")
+            return True
+
+        except Exception as e:
+            logger.error(f"更新认证配置失败: {e}")
+            return False
+
+    def _write_env_file(
+        self,
+        x_ima_cookie: str,
+        x_ima_bkn: str,
+        cookies: str = "",
+    ) -> None:
+        """将认证信息写入 .env 文件"""
+        from pathlib import Path
+
+        env_path = Path(__file__).parent.parent / ".env"
+        lines: list[str] = []
+
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+
+        updates = {
+            "IMA_X_IMA_COOKIE": x_ima_cookie,
+            "IMA_X_IMA_BKN": x_ima_bkn,
+        }
+        if cookies:
+            updates["IMA_COOKIES"] = cookies
+
+        updated_keys: set[str] = set()
+        new_lines: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            matched = False
+            for key, value in updates.items():
+                if stripped.startswith(f"{key}=") or stripped.startswith(f"{key} ="):
+                    new_lines.append(f'{key}="{value}"')
+                    updated_keys.add(key)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+
+        # 追加尚未存在的 key
+        for key, value in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f'{key}="{value}"')
+
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        logger.info(f"✅ .env 已更新: {env_path}")
+
     def _generate_missing_params(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
         """自动生成缺失的参数"""
         # 生成client_id（如果缺失）

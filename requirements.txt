@@ -11,3 +11,4 @@ pydantic-settings>=2.6.0
 websockets>=14.0
 tenacity>=8.0.0
 loguru>=0.7.0
+playwright>=1.40.0

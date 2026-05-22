@@ -159,6 +159,8 @@ class InitSessionResponse(BaseModel):
 
 class IMAConfig(BaseModel):
     """IMA 配置模型"""
+    model_config = ConfigDict(validate_default=True)
+
     # 基础认证信息
     cookies: Optional[str] = Field(None, description="完整的 Cookie 字符串（可选）")
     x_ima_cookie: str = Field(..., description="X-Ima-Cookie Header 值")

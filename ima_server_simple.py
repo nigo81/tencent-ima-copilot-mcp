@@ -68,8 +68,8 @@ def _validate_startup_config() -> tuple[bool, str]:
 
 _startup_ok, _startup_error = _validate_startup_config()
 if not _startup_ok:
-    logger.error(f"❌ 启动配置校验失败: {_startup_error}")
-    raise SystemExit(1)
+    logger.warning(f"⚠️ 启动配置不完整: {_startup_error}")
+    logger.warning("请使用 login 工具完成登录认证")
 
 
 def _get_knowledge_base_ids() -> list[str]:
@@ -268,6 +268,70 @@ async def ensure_client_ready():
             return False
     
     return True
+
+
+@mcp.tool()
+async def login() -> list[TextContent]:
+    """打开浏览器登录腾讯 IMA，自动获取认证凭据
+
+    适用场景：
+    - 首次使用，尚未配置认证信息
+    - Cookie/Token 已过期，ask 工具返回认证错误
+    - 需要切换账号
+
+    调用后会打开浏览器窗口，请在浏览器中完成登录，
+    登录成功后认证信息会自动保存，无需手动配置。
+    """
+    global ima_client, _token_refreshed
+
+    try:
+        from browser_login import login_and_capture
+    except ImportError:
+        return [TextContent(
+            type="text",
+            text="[ERROR] browser_login 模块导入失败，请检查 src/ 目录是否完整",
+        )]
+
+    try:
+        logger.info("🔐 启动浏览器登录流程...")
+        result = await login_and_capture()
+    except ImportError as e:
+        return [TextContent(type="text", text=f"[ERROR] {e}")]
+    except TimeoutError as e:
+        return [TextContent(type="text", text=f"[ERROR] {e}")]
+    except Exception as e:
+        logger.exception("浏览器登录异常")
+        return [TextContent(type="text", text=f"[ERROR] 登录失败: {e}")]
+
+    # 更新配置
+    ok = config_manager.update_auth(
+        x_ima_cookie=result["x_ima_cookie"],
+        x_ima_bkn=result["x_ima_bkn"],
+        cookies=result.get("cookies", ""),
+    )
+
+    if not ok:
+        return [TextContent(type="text", text="[ERROR] 认证信息保存失败，请查看日志")]
+
+    # 重置客户端，下次 ask 时会用新配置重建
+    if ima_client:
+        try:
+            await ima_client.close()
+        except Exception:
+            pass
+        ima_client = None
+    _token_refreshed = False
+
+    config = get_config()
+    kb_info = ""
+    if config:
+        kb_info = f"\n知识库: {config.knowledge_base_id}"
+
+    logger.info("✅ 登录成功，认证信息已更新")
+    return [TextContent(
+        type="text",
+        text=f"✅ 登录成功！认证信息已自动保存。{kb_info}\n现在可以使用 ask 工具提问了。",
+    )]
 
 
 @mcp.tool()
