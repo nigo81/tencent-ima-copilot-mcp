@@ -16,6 +16,26 @@
 - ⏱️ **超时保护** - 内置请求超时机制（300 秒），防止长时间阻塞
 - 🐳 **Docker 支持** - 提供官方 Docker 镜像，开箱即用
 
+## 📋 快速安装（发给 AI 助手）
+
+不想手动装？把下面这段话直接发给你的 AI 编程助手（Claude Code / OpenCode / Cursor 等），它会自动完成克隆、装依赖、配置客户端，**Windows / Mac 通用**：
+
+```
+帮我安装腾讯 IMA 知识库 MCP 服务器并配置到你的 MCP 客户端：
+
+仓库：https://github.com/nigo81/tencent-ima-copilot-mcp
+
+要求：
+1. git clone 用国内镜像（如 https://ghproxy.com/https://github.com/nigo81/tencent-ima-copilot-mcp），pip 安装用阿里云镜像 -i https://mirrors.aliyun.com/pypi/simple
+2. 创建 Python 虚拟环境装依赖，自动检测当前系统（Windows/Mac）选择正确的命令格式
+3. 用 python ima_server_simple.py 启动（默认 stdio 传输）
+4. 配置你自己的 MCP 客户端指向该服务器：command=python、args=["ima_server_simple.py"]、cwd=克隆目录、env 必须包含 PYTHONUNBUFFERED=1（Windows 上必需，否则工具调用会卡死超时）
+5. 装好后提示我，我需要调用 login 工具登录腾讯 IMA
+```
+
+> 💡 这段指令让 AI 助手自己适配当前操作系统和它自己的客户端配置格式，无需手动改命令。
+> Windows 用户请额外阅读 [Windows 兼容性](#-windows-兼容性) 章节，了解已修复的兼容性问题和故障排查。
+
 ## 🚀 快速开始
 
 ### 1. 安装
