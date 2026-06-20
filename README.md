@@ -35,28 +35,74 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --tru
 
 ### 2. 配置 MCP 客户端
 
-#### Claude Desktop
+服务器同时支持 **stdio** 和 **HTTP (Streamable HTTP)** 两种传输模式。
+- **stdio**: 主流 AI Agent 工具的默认方式（Claude Desktop / Claude Code / OpenCode / Cursor 等）
+- **HTTP**: 推荐用于 Docker 部署、远程访问，以及 **Windows 上 stdio 出现兼容性问题时的备选方案**
 
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
+> Windows 用户：请务必阅读下方的 [Windows 兼容性](#-windows-兼容性) 章节，代码已内置事件循环策略和 CRLF 修复，但部分客户端仍需 `PYTHONUNBUFFERED=1`。
 
+#### 方式 A：stdio 传输（默认推荐）
+
+```bash
+# 直接运行（默认 stdio）
+python ima_server_simple.py
+
+# 或显式指定
+python ima_server_simple.py --transport stdio
+```
+
+各客户端配置示例（`/path/to/tencent-ima-copilot-mcp` 替换为你的实际路径）：
+
+**Claude Desktop**（`claude_desktop_config.json`）:
 ```json
 {
   "mcpServers": {
     "ima-copilot": {
       "command": "python",
-      "args": ["-c", "import sys; sys.path.insert(0,'src'); from ima_server_simple import mcp; mcp.run(transport='stdio')"],
-      "cwd": "/path/to/tencent-ima-copilot-mcp"
+      "args": ["ima_server_simple.py"],
+      "cwd": "/path/to/tencent-ima-copilot-mcp",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
     }
   }
 }
 ```
 
-#### 其他 MCP 客户端
+**Claude Code** / **Cursor** / **OpenCode** 等支持 stdio 的客户端:
+```json
+{
+  "mcpServers": {
+    "ima-copilot": {
+      "command": "python",
+      "args": ["ima_server_simple.py"],
+      "cwd": "/path/to/tencent-ima-copilot-mcp",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
 
-根据你的 MCP 客户端配置方式，使用以下命令启动服务器：
+> 启动命令也可以用旧的内联形式：
+> `python -c "import sys; sys.path.insert(0,'src'); from ima_server_simple import mcp; mcp.run(transport='stdio')"`
+> 推荐改用 `python ima_server_simple.py`，会自动应用 Windows 兼容性补丁。
+
+#### 方式 B：HTTP 传输（远程 / Windows 备选）
 
 ```bash
-python -c "import sys; sys.path.insert(0,'src'); from ima_server_simple import mcp; mcp.run(transport='stdio')"
+# 启动 HTTP 服务器
+python ima_server_simple.py --transport http --host 127.0.0.1 --port 8081
+
+# 或使用 fastmcp 命令
+fastmcp run ima_server_simple.py:mcp --transport http --host 127.0.0.1 --port 8081
+```
+
+然后用 MCP Inspector 连接：`http://127.0.0.1:8081/mcp`
+
+```bash
+npx @modelcontextprotocol/inspector
 ```
 
 ### 3. 登录
@@ -80,6 +126,78 @@ python -c "import sys; sys.path.insert(0,'src'); from ima_server_simple import m
 ### 4. 提问
 
 登录并选择知识库后，直接向 AI 提问即可。
+
+## 🪟 Windows 兼容性
+
+Windows 上 MCP stdio 传输存在多个已知兼容性问题，本项目已**在代码层全部修复**，无需用户手动处理。
+
+### 已修复的问题
+
+| 问题 | 表现 | 修复方式 |
+|------|------|---------|
+| **事件循环策略** | stdio 握手卡死，工具调用超时（错误码 `-32001`） | 顶部强制设置 `WindowsProactorEventLoopPolicy` |
+| **CRLF 污染**（mcp python-sdk ≤1.27） | `\n` 被翻成 `\r\n`，破坏 JSON-RPC NDJSON 格式 | Monkey-patch `stdio_server`，为 `TextIOWrapper` 加 `newline=""` |
+| **stdout 全缓冲** | 客户端等不到首包 | stdio 模式下 `sys.stdout.reconfigure(line_buffering=True)` |
+| **stderr 日志污染** | 日志拖延握手或被误判为错误 | stdio 模式下默认仅写文件，可用 `IMA_MCP_LOG_TO_STDERR=1` 开启 |
+
+### Windows 客户端配置
+
+Windows 上启动命令必须用 **绝对路径**，并强烈建议加 `PYTHONUNBUFFERED=1`：
+
+```json
+{
+  "mcpServers": {
+    "ima-copilot": {
+      "command": "python",
+      "args": ["ima_server_simple.py"],
+      "cwd": "C:\\path\\to\\tencent-ima-copilot-mcp",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
+
+> **Claude Code on Windows**：若 `python` 启动失败，可尝试用 `cmd /c` 包装：
+> ```json
+> { "command": "cmd", "args": ["/c", "python", "ima_server_simple.py"] }
+> ```
+
+### 方案 B：切换到 HTTP 传输（彻底绕开 stdio）
+
+若 stdio 在你的 Windows 环境仍有问题，可改用 HTTP 传输。Claude Code / Cursor / OpenCode 均支持 HTTP。
+
+> ⚠️ **诚实评估**：fastmcp 在 Windows ProactorEventLoop 上的 HTTP/SSE 传输也有[间歇性挂起的报告](https://github.com/jlowin/fastmcp/issues/4192)（fastmcp#4192）。HTTP 是「最后兜底」而非「银弹」：若 stdio 在你的环境完全无法工作可尝试，但不要预期它比 stdio 更稳定。优先还是要按下方故障排查清单把 stdio 配置好。
+
+```bash
+# 1. 启动 HTTP 服务器（前台或后台）
+python ima_server_simple.py --transport http --host 127.0.0.1 --port 8081
+```
+
+```json
+// 2. 客户端配置指向 HTTP 端点
+{
+  "mcpServers": {
+    "ima-copilot": {
+      "url": "http://127.0.0.1:8081/mcp"
+    }
+  }
+}
+```
+
+> Claude Desktop 仅支持 stdio，无法用 HTTP；如有问题请优先用 Claude Code / Cursor / OpenCode。
+
+### 故障排查清单
+
+若 Windows 上工具调用仍超时，按顺序检查：
+
+1. `PYTHONUNBUFFERED=1` 是否生效（最常见原因）
+2. `cwd` 是否为项目根目录（必须包含 `ima_server_simple.py` 和 `src/`）
+3. `python` 命令是否指向已安装依赖的解释器（用绝对路径如 `C:\\path\\to\\python.exe` 更稳）
+4. 查看 `logs/debug/` 下最新日志文件，确认服务器是否收到请求
+5. 若需要查看服务器实时 stderr 日志（默认 stdio 模式仅落盘），在客户端 env 加 `IMA_MCP_LOG_TO_STDERR=1`
+6. 若仍失败，切换到 HTTP 传输（见上文，注意其稳定性限制）
 
 ## 🛠️ 可用的 MCP 工具
 
@@ -263,6 +381,13 @@ ruff check --fix .
 ## 🔍 故障排除
 
 ### 常见问题
+
+**Q: Windows 上工具调用超时（错误码 `-32001`）/ MCP 服务启动后无响应怎么办？**
+
+A: 参见 [Windows 兼容性](#-windows-兼容性) 章节。代码已内置事件循环策略和 CRLF 修复，但仍需：
+1. 在客户端配置中设置 `PYTHONUNBUFFERED=1`
+2. 用绝对路径指定 `cwd`
+3. 若仍失败，切换到 HTTP 传输（`--transport http`）
 
 **Q: 调用 `ask` 时返回认证错误怎么办？**
 

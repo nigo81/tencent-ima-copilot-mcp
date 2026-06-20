@@ -4,9 +4,26 @@ IMA Copilot MCP 服务器 - 基于环境变量的简化版本
 专注于 MCP 协议实现，配置通过环境变量管理
 """
 
+# === Windows 兼容性修复（必须在 asyncio / fastmcp / anyio 导入之前）===
+# Windows 默认事件循环策略不支持 asyncio subprocess，会导致 MCP stdio 握手卡死。
+# ProactorEventLoop 是 Windows 上正确处理 stdin/stdout 子进程 IO 的必要条件。
+import os
 import sys
-import json
 import asyncio
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # 关闭 Python 子进程 stdout/stderr 的全缓冲，避免 MCP 客户端等不到首包。
+    # 客户端配置也建议加 PYTHONUNBUFFERED=1，这里作为代码层兜底。
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -20,34 +37,185 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from config import config_manager, get_config, get_app_config
 from ima_client import IMAAPIClient
 
-# 配置详细的调试日志
-app_config = get_app_config()
 
-# 创建日志目录
-log_dir = Path("logs/debug")
-log_dir.mkdir(parents=True, exist_ok=True)
+def _patch_mcp_stdio_crlf() -> None:
+    """修复 mcp python-sdk 在 Windows 上的 CRLF 污染问题。
 
-# 生成带时间戳的日志文件
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_file = log_dir / f"ima_server_{timestamp}.log"
+    mcp<=1.27.x 的 stdio_server 用 ``TextIOWrapper(sys.stdout.buffer, encoding="utf-8")``
+    包裹 stdout，但没有指定 ``newline=""``，导致 Windows 上写入 ``\\n`` 会被翻译成
+    ``\\r\\n``，破坏 JSON-RPC NDJSON 格式，MCP 客户端解析挂起、工具调用超时（-32001）。
 
-# 配置 loguru
-logger.remove()  # 移除默认的 sink
-logger.add(
-    sys.stderr,
-    level="INFO",
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level> | <magenta>{extra}</magenta>"
-)
-logger.add(
-    log_file,
-    level="DEBUG",
-    rotation="10 MB",
-    retention="1 week",
-    encoding="utf-8",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message} | {extra}"
-)
+    上游追踪: https://github.com/modelcontextprotocol/python-sdk/issues/2433 (PR#2470)
 
-logger.info(f"调试日志已启用，日志文件: {log_file}")
+    实现策略：
+      - 仅对 mcp < 1.28 应用（1.28+ 上游已内置修复，版本探测后跳过）
+      - 替换后的实现**严格复制上游语义**，唯一差异是给 TextIOWrapper 加 ``newline=""``
+      - 幂等保护：``_ima_crlf_patched`` 标志防止重复 patch
+      - 失败时降级到上游原行为，仅打 warning 日志
+    """
+    # 版本探测：上游 PR#2470 预计在 1.28.0 合入，已修复版本跳过 patch
+    try:
+        from importlib.metadata import version as _pkg_version
+        _mcp_ver_str = _pkg_version("mcp")
+        _mcp_ver = tuple(int(x) for x in _mcp_ver_str.split(".")[:2])
+        if _mcp_ver >= (1, 28):
+            return  # 上游已修复，无需 patch
+    except Exception:
+        # 版本探测失败时继续尝试 patch（newline="" 幂等安全）
+        pass
+
+    try:
+        from mcp.server import stdio as _mcp_stdio
+        from contextlib import asynccontextmanager
+        from io import TextIOWrapper
+        import anyio
+        import anyio.lowlevel
+        import mcp.types as _mcp_types
+        from mcp.shared.message import SessionMessage
+
+        if getattr(_mcp_stdio, "_ima_crlf_patched", False):
+            return
+
+        @asynccontextmanager
+        async def _stdio_server_fixed(stdin=None, stdout=None):
+            # 复制上游 stdio_server 实现，唯一差异：TextIOWrapper 显式传入 newline=""
+            if not stdin:
+                stdin = anyio.wrap_file(
+                    TextIOWrapper(
+                        sys.stdin.buffer, encoding="utf-8", errors="replace", newline=""
+                    )
+                )
+            if not stdout:
+                stdout = anyio.wrap_file(
+                    TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="")
+                )
+
+            read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
+            write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+
+            async def stdin_reader():
+                try:
+                    async with read_stream_writer:
+                        async for line in stdin:
+                            try:
+                                message = _mcp_types.JSONRPCMessage.model_validate_json(line)
+                            except Exception as exc:
+                                await read_stream_writer.send(exc)
+                                continue
+                            await read_stream_writer.send(SessionMessage(message))
+                except anyio.ClosedResourceError:  # pragma: no cover
+                    await anyio.lowlevel.checkpoint()  # type: ignore[attr-defined]
+
+            async def stdout_writer():
+                try:
+                    async with write_stream_reader:
+                        async for session_message in write_stream_reader:
+                            json_str = session_message.message.model_dump_json(
+                                by_alias=True, exclude_none=True
+                            )
+                            await stdout.write(json_str + "\n")
+                            await stdout.flush()
+                except anyio.ClosedResourceError:  # pragma: no cover
+                    await anyio.lowlevel.checkpoint()  # type: ignore[attr-defined]
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(stdin_reader)
+                tg.start_soon(stdout_writer)
+                yield read_stream, write_stream
+
+        _mcp_stdio.stdio_server = _stdio_server_fixed
+        _mcp_stdio._ima_crlf_patched = True  # type: ignore[attr-defined]
+    except Exception as exc:
+        # 补丁失败不应阻断启动，降级到上游原行为
+        try:
+            logger.warning(f"mcp stdio CRLF 补丁应用失败，降级到上游实现: {exc}")
+        except Exception:
+            pass
+
+
+# 注意：patch 调用挪到 _setup_logging() 之后，避免失败时 stderr 污染 stdio 通道
+
+
+def _detect_transport() -> str:
+    """检测当前传输模式（stdio / http / sse），用于决定日志策略。
+
+    优先级：
+      1. 环境变量 IMA_MCP_TRANSPORT（由入口脚本显式设置）
+      2. 命令行参数 --transport xxx
+      3. 默认 stdio（最严格，最安全）
+    """
+    env_val = os.environ.get("IMA_MCP_TRANSPORT", "").strip().lower()
+    if env_val in ("stdio", "http", "sse", "streamable-http"):
+        if env_val == "streamable-http":
+            return "http"
+        return env_val
+
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--transport" and i + 1 < len(argv):
+            return argv[i + 1].strip().lower()
+        if arg.startswith("--transport="):
+            return arg.split("=", 1)[1].strip().lower()
+
+    return "stdio"
+
+
+def _setup_logging() -> Path:
+    """配置 loguru，stdio 模式下默认不向 stderr 输出，避免污染 MCP 通道。
+
+    stdio 模式下 stderr 仍可被客户端捕获，但大量日志输出会拖延握手、
+    甚至被部分客户端当作错误信号。stdio 模式仅写文件，
+    如需开启 stderr 可设置 IMA_MCP_LOG_TO_STDERR=1。
+    """
+    log_dir = Path("logs/debug")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"ima_server_{timestamp}.log"
+
+    transport = _detect_transport()
+    allow_stderr = (
+        transport != "stdio"
+        or os.environ.get("IMA_MCP_LOG_TO_STDERR", "").strip().lower() in ("1", "true", "yes")
+    )
+
+    logger.remove()
+
+    stderr_format = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+        "<level>{message}</level> | <magenta>{extra}</magenta>"
+    )
+    file_format = (
+        "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
+        "{name}:{function}:{line} - {message} | {extra}"
+    )
+
+    if allow_stderr:
+        logger.add(sys.stderr, level="INFO", format=stderr_format)
+
+    logger.add(
+        log_file,
+        level="DEBUG",
+        rotation="10 MB",
+        retention="1 week",
+        encoding="utf-8",
+        format=file_format,
+    )
+
+    logger.info(
+        f"日志已启用 (transport={transport}, stderr={allow_stderr})，日志文件: {log_file}"
+    )
+    return log_file
+
+
+# 模块加载时尽早配置日志，保证后续 import 链中的日志都能落盘
+# 必须在 _patch_mcp_stdio_crlf() 之前：patch 失败时的 warning 才能按 transport 策略
+# 正确输出（stdio 模式仅落盘，不污染 stderr）
+_log_file = _setup_logging()
+
+# 应用 mcp stdio CRLF 补丁（日志已就绪，降级 warning 不会污染 stdio 通道）
+_patch_mcp_stdio_crlf()
 
 # 创建 FastMCP 实例
 mcp = FastMCP("IMA Copilot")
@@ -591,37 +759,95 @@ python ima_server_simple.py
     return help_text
 
 
-def main():
-    """主函数 - 直接启动服务器时使用"""
+def _print_banner(transport: str) -> None:
+    """打印启动横幅。stdio 模式下禁止写 stdout（会污染 MCP 通道），改用 logger。"""
     app_config = get_app_config()
 
-    print("IMA Copilot MCP 服务器")
-    print("=" * 50)
-    print("版本: 简化版 (基于环境变量)")
-    print(f"服务地址: http://{app_config.host}:{app_config.port}")
-    print(f"MCP 端点: http://{app_config.host}:{app_config.port}/mcp")
-    print(f"日志级别: {app_config.log_level}")
-    print("=" * 50)
+    lines = [
+        "IMA Copilot MCP 服务器",
+        "=" * 50,
+        f"传输模式: {transport}",
+    ]
 
-    # 验证配置
+    if transport in ("http", "sse"):
+        lines.extend([
+            f"服务地址: http://{app_config.host}:{app_config.port}",
+            f"MCP 端点: http://{app_config.host}:{app_config.port}/mcp",
+        ])
+
+    lines.extend([
+        f"日志级别: {app_config.log_level}",
+        f"日志文件: {_log_file}",
+        "=" * 50,
+    ])
+
+    # 验证配置（仅打印信息，不阻断启动 —— stdio 模式下允许 login 工具补全配置）
     is_valid, error_message = _validate_startup_config()
     if not is_valid:
-        print(f"[ERROR] 启动失败: {error_message}")
-        sys.exit(1)
+        lines.append(f"[WARN] 配置不完整: {error_message}")
+        lines.append("[HINT] 请在 MCP 客户端中调用 login 工具完成登录认证")
+    else:
+        config = get_config()
+        if config:
+            lines.append("[OK] 配置加载成功")
+            lines.append(f"[INFO] 默认知识库: {config.knowledge_base_id}")
+            lines.append(f"[INFO] 可用知识库: {', '.join(config.knowledge_base_ids)}")
 
-    config = get_config()
-    if not config:
-        print("[ERROR] 配置加载失败，请检查环境变量")
-        sys.exit(1)
+    output = "\n".join(lines)
 
-    print("[OK] 配置加载成功，必需认证信息已设置")
-    print(f"[INFO] 默认知识库: {config.knowledge_base_id}")
-    print(f"[INFO] 可用知识库: {', '.join(config.knowledge_base_ids)}")
+    if transport == "stdio":
+        # stdio 模式严禁写 stdout，全部走 logger（落盘 + 可选 stderr）
+        for line in lines:
+            logger.info(line)
+    else:
+        print(output)
 
-    print("=" * 50)
-    print("启动命令:")
-    print(f"fastmcp run ima_server_simple.py:mcp --transport http --host {app_config.host} --port {app_config.port}")
-    print("=" * 50)
+
+def main():
+    """主入口：解析命令行参数并启动 MCP 服务器。
+
+    支持的传输模式：
+      - stdio (默认): 适用于 Claude Desktop / Claude Code / OpenCode / Cursor 等
+      - http:          适用于远程部署或 Windows 兼容性备选方案
+      - sse:           已弃用，仅向后兼容
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="IMA Copilot MCP 服务器",
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http", "sse"],
+        default=os.environ.get("IMA_MCP_TRANSPORT", "stdio").lower(),
+        help="MCP 传输模式（默认 stdio，Windows 有兼容性问题时建议用 http）",
+    )
+    parser.add_argument("--host", default=os.environ.get("IMA_MCP_HOST", "127.0.0.1"))
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("IMA_MCP_PORT", "8081")),
+    )
+    args = parser.parse_args()
+
+    # 同步到环境变量，供日志判断和下游模块使用
+    os.environ["IMA_MCP_TRANSPORT"] = args.transport
+    # 重新配置日志（基于确定的 transport）
+    global _log_file
+    _log_file = _setup_logging()
+
+    _print_banner(args.transport)
+
+    if args.transport == "stdio":
+        logger.info("启动 stdio 传输模式")
+        mcp.run(transport="stdio")
+    elif args.transport == "http":
+        logger.info(f"启动 http 传输模式: http://{args.host}:{args.port}/mcp")
+        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    elif args.transport == "sse":
+        logger.info(f"启动 sse 传输模式: http://{args.host}:{args.port}/sse")
+        mcp.run(transport="sse", host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
