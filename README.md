@@ -143,6 +143,53 @@ npx @modelcontextprotocol/inspector
 
 系统会自动将选择的知识库写入配置，无需手动编辑 `.env` 文件。
 
+#### 手动获取认证信息（自动登录失败时备用）
+
+如果 `login` 工具在你的环境无法工作（例如未检测到浏览器、企业环境限制、不想自动登录等），可以手动从浏览器提取认证信息并写入 `.env` 文件。
+
+**步骤 1：访问 IMA Copilot**
+
+1. 用浏览器访问 [https://ima.qq.com](https://ima.qq.com) 并登录
+2. 按 F12 打开开发者工具
+3. 切换到 **Network**（网络）标签页
+
+**步骤 2：获取认证头信息**
+
+1. 在 IMA 网页中发送一条消息（任意问题均可）
+2. 在 Network 中找到向 `/cgi-bin/assistant/qa` 发送的 POST 请求
+3. 点击该请求，切换到 **Headers** 标签
+4. 复制以下请求头的值到 `.env` 文件：
+   - `x-ima-cookie` → `IMA_X_IMA_COOKIE`
+   - `x-ima-bkn` → `IMA_X_IMA_BKN`
+
+示例 `.env`：
+
+```bash
+IMA_X_IMA_COOKIE="your_x_ima_cookie_here"
+IMA_X_IMA_BKN="your_x_ima_bkn_here"
+```
+
+> **注意**：`IMA_X_IMA_COOKIE` 中必须包含 `IMA-REFRESH-TOKEN` 字段，否则 token 过期后无法自动刷新。如果 cookie 太短或不包含该字段，请重新登录后再复制。
+
+**步骤 3：获取知识库 ID**
+
+1. 在 IMA 网页左侧选择目标知识库
+2. 在 Network 中找到 `init_session` 请求
+3. 查看 **Payload**，复制 `knowledge_base_id` 字段的值
+4. 写入 `.env`：
+
+```bash
+IMA_KNOWLEDGE_BASE_ID="your_knowledge_base_id_here"
+```
+
+多知识库场景可使用逗号分隔：
+
+```bash
+IMA_KNOWLEDGE_BASE_IDS="id1,id2,id3"
+```
+
+完成以上步骤后，重启 MCP 服务器即可使用。
+
 ### 4. 提问
 
 登录并选择知识库后，直接向 AI 提问即可。
@@ -302,8 +349,8 @@ knowledge_base_id: "7305806844290061"
 
 | 变量名 | 说明 | 获取方式 |
 |--------|------|---------|
-| `IMA_X_IMA_COOKIE` | X-Ima-Cookie 请求头 | 由 `login` 工具自动填充 |
-| `IMA_X_IMA_BKN` | X-Ima-Bkn 请求头 | 由 `login` 工具自动填充 |
+| `IMA_X_IMA_COOKIE` | X-Ima-Cookie 请求头 | 由 `login` 工具自动填充，或[手动从浏览器复制](#手动获取认证信息自动登录失败时备用) |
+| `IMA_X_IMA_BKN` | X-Ima-Bkn 请求头 | 由 `login` 工具自动填充，或[手动从浏览器复制](#手动获取认证信息自动登录失败时备用) |
 | `IMA_KNOWLEDGE_BASE_ID` | 知识库 ID（单知识库模式） | 手动配置（见下方说明） |
 
 ### 可选的环境变量
@@ -325,11 +372,7 @@ knowledge_base_id: "7305806844290061"
 
 **推荐方式**：直接调用 `login` 工具，登录后会自动列出所有知识库及其 ID，无需手动获取。
 
-**手动方式**：
-1. 在 IMA 网页选择目标知识库
-2. 按 F12 打开开发者工具，切换到 Network 标签
-3. 找到 `init_session` 请求
-4. 查看 Payload 中的 `knowledge_base_id` 字段
+**手动方式**：在 IMA 网页选择目标知识库后，按 F12 打开开发者工具，找到 `init_session` 请求，查看 Payload 中的 `knowledge_base_id` 字段。完整步骤见 [手动获取认证信息](#手动获取认证信息自动登录失败时备用)。
 
 ### 知识库配置模式
 
@@ -414,20 +457,19 @@ A: 参见 [Windows 兼容性](#-windows-兼容性) 章节。代码已内置事�
 A:
 1. 直接调用 `login` 工具重新登录
 2. `login` 会自动打开浏览器，等待你登录后自动捕获新的认证信息
+3. 如果自动登录不可用，可按[手动获取认证信息](#手动获取认证信息自动登录失败时备用)的步骤重新从浏览器复制
 
 **Q: `login` 工具提示 "未检测到可用的浏览器" 怎么办？**
 
 A:
 1. 确保系统已安装 Chrome/Edge/QQ 浏览器/360/Firefox 等浏览器之一
 2. 如果已安装但仍报错，请手动配置浏览器路径到环境变量或代码中
+3. 也可以改用[手动获取认证信息](#手动获取认证信息自动登录失败时备用)，不依赖浏览器自动检测
 
 **Q: 如何连接特定的知识库？**
 
 A:
-在 `.env` 文件中设置 `IMA_KNOWLEDGE_BASE_ID` 即可。获取方法：
-1. 在 IMA 网页选择知识库
-2. 找到 `init_session` 请求
-3. 查看 Payload 中的 `knowledge_base_id`
+在 `.env` 文件中设置 `IMA_KNOWLEDGE_BASE_ID` 即可。获取方法见 [手动获取认证信息](#手动获取认证信息自动登录失败时备用) 中的「步骤 3：获取知识库 ID」。
 
 **Q: 多知识库怎么配置和调用？**
 
