@@ -102,8 +102,18 @@ def _get_candidates(system: str) -> list[dict]:
                 "name": "Google Chrome",
             },
             {
+                "channel": "chrome",
+                "check": f"{local}\\Google\\Chrome\\Application\\chrome.exe",
+                "name": "Google Chrome",
+            },
+            {
                 "channel": "msedge",
                 "check": f"{pf}\\Microsoft\\Edge\\Application\\msedge.exe",
+                "name": "Microsoft Edge",
+            },
+            {
+                "channel": "msedge",
+                "check": f"{pf86}\\Microsoft\\Edge\\Application\\msedge.exe",
                 "name": "Microsoft Edge",
             },
             {
